@@ -1,6 +1,6 @@
 """Threat intel routes — live feed, IOC lookup."""
 import asyncio
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select, desc, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -59,7 +59,7 @@ async def get_feed(
 
 @router.get("/feed/stats")
 async def get_feed_stats(db: AsyncSession = Depends(get_db)):
-    since_24h = datetime.now(timezone.utc) - timedelta(hours=24)
+    since_24h = datetime.utcnow() - timedelta(hours=24)
     result = await db.execute(
         select(FeedItem.source, func.count(FeedItem.id).label("count"))
         .where(FeedItem.seen_at >= since_24h)
