@@ -1,0 +1,66 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: argus
+      POSTGRES_USER: argus
+      POSTGRES_PASSWORD: argus
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U argus"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgresql+asyncpg://argus:argus@postgres:5432/argus
+      REDIS_URL: redis://redis:6379
+      OTX_API_KEY: ${OTX_API_KEY:-}
+      VT_API_KEY: ${VT_API_KEY:-}
+      GREYNOISE_API_KEY: ${GREYNOISE_API_KEY:-}
+      SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
