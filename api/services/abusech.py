@@ -1,33 +1,39 @@
 """Abuse.ch feed clients — URLhaus, MalwareBazaar, ThreatFox, Feodo. All free, no key."""
 import httpx
-from datetime import datetime
 
 
 class AbusechClient:
-    URLHAUS = "https://urlhaus-api.abuse.ch/v1/urls/recent/limit/100/"
+    # URLhaus JSON download (no auth required)
+    URLHAUS_JSON = "https://urlhaus.abuse.ch/downloads/json_recent/"
     MALWARE_BAZAAR = "https://mb-api.abuse.ch/api/v1/"
     THREATFOX = "https://threatfox-api.abuse.ch/api/v1/"
     FEODO = "https://feodotracker.abuse.ch/downloads/ipblocklist.json"
 
     async def fetch_urlhaus_recent(self) -> list[dict]:
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.post(self.URLHAUS, data={"query": "get_urls", "limit": 100})
+        async with httpx.AsyncClient(timeout=20) as client:
+            resp = await client.get(self.URLHAUS_JSON)
             resp.raise_for_status()
-            data = resp.json()
+            entries = resp.json()
             items = []
-            for url_entry in data.get("urls", []):
+            for entry in (entries if isinstance(entries, list) else []):
+                url = entry.get("url", "")
+                if not url:
+                    continue
+                tags = []
+                if entry.get("tags"):
+                    tags = [t for t in entry["tags"] if t] if isinstance(entry["tags"], list) else []
                 items.append({
                     "source": "urlhaus",
-                    "ioc_value": url_entry.get("url", ""),
+                    "ioc_value": url,
                     "ioc_type": "url",
-                    "tags": [t.get("tag", "") for t in url_entry.get("tags", []) if t.get("tag")],
+                    "tags": tags,
                     "metadata": {
-                        "url_status": url_entry.get("url_status"),
-                        "threat": url_entry.get("threat"),
-                        "host": url_entry.get("host"),
+                        "url_status": entry.get("url_status"),
+                        "threat": entry.get("threat"),
+                        "host": entry.get("host"),
                     },
                 })
-            return items
+            return items[:200]
 
     async def fetch_threatfox_recent(self) -> list[dict]:
         payload = {"query": "get_iocs", "days": 1}
@@ -36,8 +42,8 @@ class AbusechClient:
             resp.raise_for_status()
             data = resp.json()
             items = []
-            for ioc in data.get("data", []):
-                ioc_type = ioc.get("ioc_type", "domain").lower()
+            for ioc in data.get("data", []) or []:
+                ioc_type = (ioc.get("ioc_type") or "domain").lower()
                 if "ip" in ioc_type:
                     ioc_type = "ip"
                 elif "domain" in ioc_type:
@@ -67,12 +73,15 @@ class AbusechClient:
             resp.raise_for_status()
             data = resp.json()
             items = []
-            for entry in data:
+            for entry in (data if isinstance(data, list) else []):
+                ip = entry.get("ip_address", "")
+                if not ip:
+                    continue
                 items.append({
                     "source": "feodo",
-                    "ioc_value": entry.get("ip_address", ""),
+                    "ioc_value": ip,
                     "ioc_type": "ip",
-                    "tags": ["c2", "botnet", entry.get("malware", "").lower()],
+                    "tags": ["c2", "botnet", (entry.get("malware") or "").lower()],
                     "metadata": {
                         "malware": entry.get("malware"),
                         "port": entry.get("port"),
@@ -89,10 +98,13 @@ class AbusechClient:
             resp.raise_for_status()
             data = resp.json()
             items = []
-            for sample in data.get("data", []):
+            for sample in data.get("data", []) or []:
+                h = sample.get("sha256_hash", "")
+                if not h:
+                    continue
                 items.append({
                     "source": "malwarebazaar",
-                    "ioc_value": sample.get("sha256_hash", ""),
+                    "ioc_value": h,
                     "ioc_type": "sha256",
                     "tags": sample.get("tags") or [],
                     "metadata": {
