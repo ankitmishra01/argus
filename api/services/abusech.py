@@ -1,13 +1,15 @@
-"""Abuse.ch feed clients — URLhaus, MalwareBazaar, ThreatFox, Feodo. All free, no key."""
+"""Abuse.ch feed clients — all using public bulk download endpoints, no key required."""
 import httpx
+import csv
+import io
 
 
 class AbusechClient:
-    # URLhaus JSON download (no auth required)
-    URLHAUS_JSON = "https://urlhaus.abuse.ch/downloads/json_recent/"
-    MALWARE_BAZAAR = "https://mb-api.abuse.ch/api/v1/"
-    THREATFOX = "https://threatfox-api.abuse.ch/api/v1/"
-    FEODO = "https://feodotracker.abuse.ch/downloads/ipblocklist.json"
+    # All public bulk download endpoints — no authentication required
+    URLHAUS_JSON    = "https://urlhaus.abuse.ch/downloads/json_recent/"
+    THREATFOX_CSV   = "https://threatfox.abuse.ch/export/csv/recent/"
+    MALWAREBAZAAR_TXT  = "https://bazaar.abuse.ch/export/txt/sha256/recent/"
+    FEODO           = "https://feodotracker.abuse.ch/downloads/ipblocklist.json"
 
     async def fetch_urlhaus_recent(self) -> list[dict]:
         async with httpx.AsyncClient(timeout=20) as client:
@@ -36,36 +38,51 @@ class AbusechClient:
             return items[:200]
 
     async def fetch_threatfox_recent(self) -> list[dict]:
-        payload = {"query": "get_iocs", "days": 1}
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.post(self.THREATFOX, json=payload)
+        """Uses the public CSV export — no API key required."""
+        async with httpx.AsyncClient(timeout=20) as client:
+            resp = await client.get(self.THREATFOX_CSV)
             resp.raise_for_status()
-            data = resp.json()
+            # ThreatFox header is a comment line — strip comments and hardcode fieldnames
+            # Format: first_seen_utc,ioc_id,ioc_value,ioc_type,malware,malware_alias,
+            #         malware_printable,last_seen_utc,confidence_level,reference,tags,anonymous,reporter
+            TF_FIELDS = ["first_seen_utc","ioc_id","ioc_value","ioc_type","malware",
+                         "malware_alias","malware_printable","last_seen_utc",
+                         "confidence_level","reference","tags","anonymous","reporter"]
+            data_lines = [l for l in resp.text.splitlines()
+                          if l and not l.startswith("#") and not l.startswith("first_seen")]
+            reader = csv.DictReader(data_lines, fieldnames=TF_FIELDS)
             items = []
-            for ioc in data.get("data", []) or []:
-                ioc_type = (ioc.get("ioc_type") or "domain").lower()
-                if "ip" in ioc_type:
+            for row in reader:
+                # ThreatFox CSV columns: first_seen_utc, ioc_id, ioc_value, ioc_type, ...
+                ioc_value = (row.get("ioc_value") or row.get("ioc") or "").strip().strip('"')
+                raw_type = (row.get("ioc_type") or "domain").strip().strip('"').lower()
+                if not ioc_value:
+                    continue
+                if "ip" in raw_type:
                     ioc_type = "ip"
-                elif "domain" in ioc_type:
+                elif "domain" in raw_type:
                     ioc_type = "domain"
-                elif "url" in ioc_type:
+                elif "url" in raw_type:
                     ioc_type = "url"
-                elif "md5" in ioc_type:
+                elif "md5" in raw_type:
                     ioc_type = "md5"
-                elif "sha256" in ioc_type:
+                elif "sha256" in raw_type:
                     ioc_type = "sha256"
+                else:
+                    ioc_type = "domain"
+                raw_tags = (row.get("tags") or "").strip().strip('"')
+                tags = [t.strip() for t in raw_tags.split(",") if t.strip()] if raw_tags else []
                 items.append({
                     "source": "threatfox",
-                    "ioc_value": ioc.get("ioc", ""),
+                    "ioc_value": ioc_value[:512],
                     "ioc_type": ioc_type,
-                    "tags": ioc.get("tags") or [],
+                    "tags": tags,
                     "metadata": {
-                        "malware": ioc.get("malware"),
-                        "confidence": ioc.get("confidence_level"),
-                        "threat_type": ioc.get("threat_type"),
+                        "malware": (row.get("malware_printable") or row.get("malware") or "").strip()[:128],
+                        "confidence": (row.get("confidence_level") or row.get("confidence") or "").strip()[:32],
                     },
                 })
-            return items
+            return items[:300]
 
     async def fetch_feodo_c2(self) -> list[dict]:
         async with httpx.AsyncClient(timeout=15) as client:
@@ -92,26 +109,22 @@ class AbusechClient:
             return items
 
     async def fetch_malwarebazaar_recent(self) -> list[dict]:
-        payload = {"query": "get_recent", "selector": "100"}
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.post(self.MALWARE_BAZAAR, data=payload)
+        """Uses the public SHA-256 text export — no API key required."""
+        async with httpx.AsyncClient(timeout=20) as client:
+            resp = await client.get(self.MALWAREBAZAAR_TXT)
             resp.raise_for_status()
-            data = resp.json()
             items = []
-            for sample in data.get("data", []) or []:
-                h = sample.get("sha256_hash", "")
-                if not h:
+            for line in resp.text.splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
                     continue
-                items.append({
-                    "source": "malwarebazaar",
-                    "ioc_value": h,
-                    "ioc_type": "sha256",
-                    "tags": sample.get("tags") or [],
-                    "metadata": {
-                        "file_name": sample.get("file_name"),
-                        "file_type": sample.get("file_type"),
-                        "signature": sample.get("signature"),
-                        "md5": sample.get("md5_hash"),
-                    },
-                })
-            return items
+                # Each line is a bare SHA-256 hash
+                if len(line) == 64 and all(c in "0123456789abcdefABCDEF" for c in line):
+                    items.append({
+                        "source": "malwarebazaar",
+                        "ioc_value": line.lower(),
+                        "ioc_type": "sha256",
+                        "tags": ["malware"],
+                        "metadata": {},
+                    })
+            return items[:200]

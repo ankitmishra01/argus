@@ -15,25 +15,26 @@ async def _upsert_feed_items(items: list[dict], source: str) -> int:
     factory = get_session_factory()
     count = 0
     async with factory() as session:
-        for item in items:
-            if not item.get("ioc_value"):
-                continue
-            existing = await session.execute(
-                select(FeedItem).where(
-                    FeedItem.source == source,
-                    FeedItem.ioc_value == item["ioc_value"],
+        with session.no_autoflush:
+            for item in items:
+                if not item.get("ioc_value"):
+                    continue
+                existing = await session.execute(
+                    select(FeedItem).where(
+                        FeedItem.source == source,
+                        FeedItem.ioc_value == item["ioc_value"],
+                    )
                 )
-            )
-            if existing.scalar_one_or_none() is None:
-                session.add(FeedItem(
-                    source=source,
-                    ioc_value=item["ioc_value"],
-                    ioc_type=item.get("ioc_type", "unknown"),
-                    tags=item.get("tags", []),
-                    metadata_=item.get("metadata", {}),
-                    seen_at=datetime.utcnow(),
-                ))
-                count += 1
+                if existing.scalar_one_or_none() is None:
+                    session.add(FeedItem(
+                        source=source,
+                        ioc_value=item["ioc_value"],
+                        ioc_type=item.get("ioc_type", "unknown"),
+                        tags=item.get("tags", []),
+                        metadata_=item.get("metadata", {}),
+                        seen_at=datetime.utcnow(),
+                    ))
+                    count += 1
         await session.commit()
 
     await _update_feed_status(source, count)
